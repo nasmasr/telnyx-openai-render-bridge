@@ -1,0 +1,19 @@
+{
+  "name": "telnyx-openai-render-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js",
+    "verify:openai": "node scripts/verify-openai.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
