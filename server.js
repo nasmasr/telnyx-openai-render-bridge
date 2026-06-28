@@ -16,21 +16,28 @@ const {
   PORT = 3000,
 } = process.env;
 
-const required = {
-  TELNYX_API_KEY,
-  OPENAI_API_KEY,
-  PUBLIC_BASE_URL,
-  DEMO_TO_NUMBER,
-  REALTIME_MODEL,
-  REALTIME_VOICE,
-  AGENT_PROMPT,
-  GREETING_INSTRUCTIONS,
-};
-for (const [key, value] of Object.entries(required)) {
-  if (!value || !String(value).trim()) throw new Error(`${key} is required`);
+const requiredKeys = [
+  'TELNYX_API_KEY',
+  'OPENAI_API_KEY',
+  'PUBLIC_BASE_URL',
+  'DEMO_TO_NUMBER',
+  'REALTIME_MODEL',
+  'REALTIME_VOICE',
+  'AGENT_PROMPT',
+  'GREETING_INSTRUCTIONS',
+];
+
+function getMissingEnv() {
+  return requiredKeys.filter(key => !process.env[key] || !String(process.env[key]).trim());
 }
 
-const promptHash = crypto.createHash('sha256').update(AGENT_PROMPT).digest('hex').slice(0, 12);
+function configReady() {
+  return getMissingEnv().length === 0;
+}
+
+const promptHash = AGENT_PROMPT
+  ? crypto.createHash('sha256').update(AGENT_PROMPT).digest('hex').slice(0, 12)
+  : 'missing';
 const app = express();
 app.use(express.json({ type: '*/*' }));
 app.use(express.urlencoded({ extended: false }));
@@ -63,24 +70,57 @@ function isDemoNumber(to) {
   return normalizePhone(to) === normalizePhone(DEMO_TO_NUMBER);
 }
 
+async function telnyxCallAction(callControlId, action, body = {}) {
+  if (!callControlId) throw new Error(`Cannot ${action}: missing callControlId`);
+  const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/${action}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${TELNYX_API_KEY}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  log(`[telnyx ${action}]`, response.status, text.slice(0, 600));
+  if (!response.ok) throw new Error(`Telnyx ${action} failed: ${response.status} ${text}`);
+  return text;
+}
+
+function endCallLater(callControlId, reason = 'agent_requested_end_call') {
+  const clientState = Buffer.from(JSON.stringify({ reason, prompt_version: PROMPT_VERSION })).toString('base64');
+  log('[end_call] scheduled', callControlId || 'missing', reason);
+  setTimeout(() => {
+    telnyxCallAction(callControlId, 'hangup', { client_state: clientState })
+      .catch(err => log('[end_call error]', err?.stack || err?.message || err));
+  }, 2500);
+}
+
 app.get('/', (req, res) => res.type('text/plain').send('Dedicated lead demo Telnyx → OpenAI Realtime bridge OK'));
 
 app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
+  const missing = getMissingEnv();
+  res.status(missing.length ? 503 : 200).json({
+    ok: missing.length === 0,
     stack: 'dedicated-lead-demo-telnyx-render-openai-realtime-gpt',
-    demo_to_number: DEMO_TO_NUMBER,
-    model: REALTIME_MODEL,
-    voice: REALTIME_VOICE,
+    demo_to_number: DEMO_TO_NUMBER || null,
+    model: REALTIME_MODEL || null,
+    voice: REALTIME_VOICE || null,
     prompt_version: PROMPT_VERSION,
     prompt_hash: promptHash,
-    webhook: publicHttps('/telnyx/webhook'),
-    stream: publicWss('/telnyx/stream'),
+    missing_env: missing,
+    webhook: PUBLIC_BASE_URL ? publicHttps('/telnyx/webhook') : null,
+    stream: PUBLIC_BASE_URL ? publicWss('/telnyx/stream') : null,
   });
 });
 
 app.post('/telnyx/webhook', async (req, res) => {
   res.sendStatus(200);
+
+  if (!configReady()) {
+    log('[config missing] refusing webhook', getMissingEnv().join(','));
+    return;
+  }
 
   const event = req.body?.data || req.body;
   const eventType = event?.event_type;
@@ -172,6 +212,21 @@ function handleTelnyxStream(telnyxWs) {
             },
             output: { format: { type: 'audio/pcmu' }, voice: REALTIME_VOICE },
           },
+          tools: [
+            {
+              type: 'function',
+              name: 'end_call',
+              description: 'Politely end the current phone call after the caller is clearly finished or asks to end the call.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  reason: { type: 'string', description: 'Short reason the call should be ended.' },
+                },
+                required: ['reason'],
+              },
+            },
+          ],
+          tool_choice: 'auto',
         },
       });
     });
@@ -214,6 +269,25 @@ function handleTelnyxStream(telnyxWs) {
         // Previous implementation sent impossible truncate times and degraded barge-in.
         sendJson(telnyxWs, { event: 'clear' });
         log('[barge-in] caller speech detected; cleared Telnyx playback queue');
+      }
+
+      if (event.type === 'response.function_call_arguments.done') {
+        let args = {};
+        try { args = JSON.parse(event.arguments || '{}'); } catch {}
+        log('[tool]', event.name || 'unknown', JSON.stringify(args));
+
+        if (event.name === 'end_call') {
+          sendJson(openaiWs, {
+            type: 'conversation.item.create',
+            item: {
+              type: 'function_call_output',
+              call_id: event.call_id,
+              output: JSON.stringify({ success: true, message: 'The call will be ended now.' }),
+            },
+          });
+          endCallLater(callControlId, args.reason || 'agent_requested_end_call');
+          return;
+        }
       }
 
       if (event.type === 'response.output_audio_transcript.done') log('[agent]', event.transcript || '');
@@ -273,8 +347,8 @@ function handleTelnyxStream(telnyxWs) {
 
 server.listen(Number(PORT), () => {
   log(`listening on ${PORT}`);
-  log(`webhook ${publicHttps('/telnyx/webhook')}`);
-  log(`stream  ${publicWss('/telnyx/stream')}`);
+  log(`webhook ${PUBLIC_BASE_URL ? publicHttps('/telnyx/webhook') : 'missing PUBLIC_BASE_URL'}`);
+  log(`stream  ${PUBLIC_BASE_URL ? publicWss('/telnyx/stream') : 'missing PUBLIC_BASE_URL'}`);
   log(`demo_to_number ${DEMO_TO_NUMBER}`);
   log(`model ${REALTIME_MODEL} voice ${REALTIME_VOICE} prompt ${PROMPT_VERSION} hash ${promptHash}`);
 });
