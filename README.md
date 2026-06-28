@@ -8,7 +8,7 @@ Telnyx Call Control / media streaming
 → OpenAI Realtime GPT (`gpt-realtime-2` by default)
 ```
 
-No Supabase, LiveKit, Grok/xAI, VAPI, or local tunnel is used by this bridge.
+This bridge is dedicated to the demo line and contains no database, alternate voice provider, hosted-phone platform, or local tunnel dependency.
 
 ## Environment variables
 

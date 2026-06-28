@@ -2,8 +2,9 @@ import { WebSocket } from 'ws';
 
 const key = process.env.OPENAI_API_KEY;
 const model = process.env.REALTIME_MODEL || 'gpt-realtime-2';
-const voice = process.env.REALTIME_VOICE || 'alloy';
+const voice = process.env.REALTIME_VOICE;
 if (!key) throw new Error('Missing OPENAI_API_KEY');
+if (!voice) throw new Error('Missing REALTIME_VOICE');
 
 const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
   headers: { Authorization: `Bearer ${key}` },
@@ -40,7 +41,7 @@ ws.on('message', data => {
   }
   if (event.type === 'session.updated') {
     clearTimeout(timeout);
-    console.log(`verified OpenAI Realtime ${model} PCMU session.updated`);
+    console.log(`verified OpenAI Realtime ${model} voice=${voice} PCMU session.updated`);
     ws.close();
   }
 });
