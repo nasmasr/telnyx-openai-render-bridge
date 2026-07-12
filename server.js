@@ -2,6 +2,11 @@ import crypto from 'node:crypto';
 import express from 'express';
 import { createServer } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
+import {
+  AGENT_PROMPT as BUILT_IN_AGENT_PROMPT,
+  GREETING_INSTRUCTIONS as BUILT_IN_GREETING_INSTRUCTIONS,
+  PROMPT_VERSION as BUILT_IN_PROMPT_VERSION,
+} from './agent-config.js';
 
 const {
   TELNYX_API_KEY,
@@ -10,11 +15,26 @@ const {
   DEMO_TO_NUMBER,
   REALTIME_MODEL = 'gpt-realtime-2',
   REALTIME_VOICE,
-  AGENT_PROMPT,
-  GREETING_INSTRUCTIONS,
-  PROMPT_VERSION = 'unset',
+  AGENT_PROMPT: ENV_AGENT_PROMPT,
+  GREETING_INSTRUCTIONS: ENV_GREETING_INSTRUCTIONS,
+  PROMPT_VERSION: ENV_PROMPT_VERSION,
+  USE_ENV_PROMPT = 'false',
+  ENABLE_CALL_RECORDING = 'true',
   PORT = 3000,
 } = process.env;
+
+const useEnvPrompt = /^(1|true|yes|on)$/i.test(USE_ENV_PROMPT);
+const recordingEnabled = !/^(0|false|no|off)$/i.test(ENABLE_CALL_RECORDING);
+const AGENT_PROMPT = useEnvPrompt && ENV_AGENT_PROMPT?.trim()
+  ? ENV_AGENT_PROMPT.trim()
+  : BUILT_IN_AGENT_PROMPT;
+const GREETING_INSTRUCTIONS = useEnvPrompt && ENV_GREETING_INSTRUCTIONS?.trim()
+  ? ENV_GREETING_INSTRUCTIONS.trim()
+  : BUILT_IN_GREETING_INSTRUCTIONS;
+const PROMPT_VERSION = useEnvPrompt && ENV_PROMPT_VERSION?.trim()
+  ? ENV_PROMPT_VERSION.trim()
+  : BUILT_IN_PROMPT_VERSION;
+const promptSource = useEnvPrompt ? 'environment' : 'versioned-code';
 
 const requiredKeys = [
   'TELNYX_API_KEY',
@@ -23,8 +43,6 @@ const requiredKeys = [
   'DEMO_TO_NUMBER',
   'REALTIME_MODEL',
   'REALTIME_VOICE',
-  'AGENT_PROMPT',
-  'GREETING_INSTRUCTIONS',
 ];
 
 function getMissingEnv() {
@@ -45,6 +63,7 @@ app.use(express.urlencoded({ extended: false }));
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const calls = new Map();
+const recordingStarted = new Set();
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
@@ -96,6 +115,32 @@ function endCallLater(callControlId, reason = 'agent_requested_end_call') {
   }, 2500);
 }
 
+async function startCallRecording(callControlId) {
+  if (!recordingEnabled || !callControlId || recordingStarted.has(callControlId)) return;
+  recordingStarted.add(callControlId);
+  const clientState = Buffer.from(JSON.stringify({
+    purpose: 'voice_demo_pitch',
+    prompt_version: PROMPT_VERSION,
+  })).toString('base64');
+
+  try {
+    await telnyxCallAction(callControlId, 'record_start', {
+      format: 'mp3',
+      channels: 'dual',
+      recording_track: 'both',
+      trim: 'trim-silence',
+      play_beep: false,
+      client_state: clientState,
+      command_id: `record-${callControlId.slice(-18)}`,
+      custom_file_name: `tx-standard-demo-${Date.now()}`,
+    });
+    log('[recording] started', callControlId, 'dual-channel mp3');
+  } catch (err) {
+    recordingStarted.delete(callControlId);
+    log('[recording error]', err?.stack || err?.message || err);
+  }
+}
+
 app.get('/', (req, res) => res.type('text/plain').send('Dedicated lead demo Telnyx → OpenAI Realtime bridge OK'));
 
 app.get('/health', (req, res) => {
@@ -107,7 +152,11 @@ app.get('/health', (req, res) => {
     model: REALTIME_MODEL || null,
     voice: REALTIME_VOICE || null,
     prompt_version: PROMPT_VERSION,
+    prompt_source: promptSource,
     prompt_hash: promptHash,
+    recording_enabled: recordingEnabled,
+    recording_format: recordingEnabled ? 'mp3' : null,
+    recording_channels: recordingEnabled ? 'dual' : null,
     missing_env: missing,
     webhook: PUBLIC_BASE_URL ? publicHttps('/telnyx/webhook') : null,
     stream: PUBLIC_BASE_URL ? publicWss('/telnyx/stream') : null,
@@ -127,6 +176,28 @@ app.post('/telnyx/webhook', async (req, res) => {
   const payload = event?.payload || {};
   const callControlId = payload.call_control_id;
   log('[telnyx webhook]', eventType, callControlId || '', payload.from || '', '→', payload.to || '');
+
+  if (eventType === 'call.recording.saved') {
+    log('[recording] saved', payload.recording_id || payload.id || 'unknown', callControlId || '');
+    return;
+  }
+
+  if (eventType === 'call.recording.error') {
+    log('[recording] Telnyx reported an error', callControlId || '', JSON.stringify(payload.errors || payload.error || {}));
+    return;
+  }
+
+  if (eventType === 'call.hangup') {
+    calls.delete(callControlId);
+    recordingStarted.delete(callControlId);
+    return;
+  }
+
+  if (eventType === 'call.answered') {
+    const tracked = calls.get(callControlId);
+    if (tracked || isDemoNumber(payload.to)) await startCallRecording(callControlId);
+    return;
+  }
 
   if (eventType !== 'call.initiated' || payload.direction !== 'incoming') return;
   if (!callControlId) return log('[guard] missing call_control_id');

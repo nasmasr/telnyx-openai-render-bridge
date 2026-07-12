@@ -7,6 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js",
+    "test": "node --test",
+    "eval:agent": "node scripts/eval-agent.js",
     "verify:openai": "node scripts/verify-openai.js"
   },
   "engines": {
