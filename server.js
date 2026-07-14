@@ -13,7 +13,7 @@ const {
   OPENAI_API_KEY,
   PUBLIC_BASE_URL,
   DEMO_TO_NUMBER,
-  REALTIME_MODEL = 'gpt-realtime-2',
+  REALTIME_MODEL = 'gpt-realtime-2.1',
   REALTIME_VOICE,
   AGENT_PROMPT: ENV_AGENT_PROMPT,
   GREETING_INSTRUCTIONS: ENV_GREETING_INSTRUCTIONS,
@@ -64,6 +64,7 @@ const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const calls = new Map();
 const recordingStarted = new Set();
+const MAX_PENDING_AUDIO_CHUNKS = 500;
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
@@ -119,7 +120,7 @@ async function startCallRecording(callControlId) {
   if (!recordingEnabled || !callControlId || recordingStarted.has(callControlId)) return;
   recordingStarted.add(callControlId);
   const clientState = Buffer.from(JSON.stringify({
-    purpose: 'voice_demo_pitch',
+    purpose: 'americas_general_contractor_voice_demo',
     prompt_version: PROMPT_VERSION,
   })).toString('base64');
 
@@ -128,11 +129,10 @@ async function startCallRecording(callControlId) {
       format: 'mp3',
       channels: 'dual',
       recording_track: 'both',
-      trim: 'trim-silence',
       play_beep: false,
       client_state: clientState,
       command_id: `record-${callControlId.slice(-18)}`,
-      custom_file_name: `tx-standard-demo-${Date.now()}`,
+      custom_file_name: `americas-gc-demo-${Date.now()}`,
     });
     log('[recording] started', callControlId, 'dual-channel mp3');
   } catch (err) {
@@ -141,13 +141,13 @@ async function startCallRecording(callControlId) {
   }
 }
 
-app.get('/', (req, res) => res.type('text/plain').send('Dedicated lead demo Telnyx → OpenAI Realtime bridge OK'));
+app.get('/', (req, res) => res.type('text/plain').send("America's General Contractor demo Telnyx → OpenAI Realtime bridge OK"));
 
 app.get('/health', (req, res) => {
   const missing = getMissingEnv();
   res.status(missing.length ? 503 : 200).json({
     ok: missing.length === 0,
-    stack: 'dedicated-lead-demo-telnyx-render-openai-realtime-gpt',
+    stack: 'americas-general-contractor-telnyx-render-openai-realtime',
     demo_to_number: DEMO_TO_NUMBER || null,
     model: REALTIME_MODEL || null,
     voice: REALTIME_VOICE || null,
@@ -178,7 +178,12 @@ app.post('/telnyx/webhook', async (req, res) => {
   log('[telnyx webhook]', eventType, callControlId || '', payload.from || '', '→', payload.to || '');
 
   if (eventType === 'call.recording.saved') {
-    log('[recording] saved', payload.recording_id || payload.id || 'unknown', callControlId || '');
+    log(
+      '[recording] saved',
+      payload.recording_id || payload.id || 'unknown',
+      callControlId || '',
+      JSON.stringify(payload.recording_urls || payload.public_recording_urls || {}),
+    );
     return;
   }
 
@@ -253,6 +258,7 @@ function handleTelnyxStream(telnyxWs) {
   let latestMediaTimestamp = 0;
   let openaiReady = false;
   let greetingSent = false;
+  let responseInProgress = false;
   let openaiWs = null;
   const pendingAudio = [];
 
@@ -273,7 +279,8 @@ function handleTelnyxStream(telnyxWs) {
           audio: {
             input: {
               format: { type: 'audio/pcmu' },
-              transcription: { model: 'whisper-1' },
+              noise_reduction: { type: 'near_field' },
+              transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
               turn_detection: {
                 type: 'server_vad',
                 threshold: 0.45,
@@ -298,6 +305,7 @@ function handleTelnyxStream(telnyxWs) {
             },
           ],
           tool_choice: 'auto',
+          max_output_tokens: 1200,
         },
       });
     });
@@ -325,6 +333,9 @@ function handleTelnyxStream(telnyxWs) {
         return;
       }
 
+      if (event.type === 'response.created') responseInProgress = true;
+      if (event.type === 'response.done') responseInProgress = false;
+
       if (event.type === 'response.output_audio.delta' && streamId) {
         sendJson(telnyxWs, { event: 'media', media: { payload: event.delta } });
         return;
@@ -336,10 +347,12 @@ function handleTelnyxStream(telnyxWs) {
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
-        // Do not send OpenAI truncate until Telnyx/OpenAI timestamp domains are reconciled.
-        // Previous implementation sent impossible truncate times and degraded barge-in.
+        if (responseInProgress) {
+          sendJson(openaiWs, { type: 'response.cancel' });
+          responseInProgress = false;
+        }
         sendJson(telnyxWs, { event: 'clear' });
-        log('[barge-in] caller speech detected; cleared Telnyx playback queue');
+        log('[barge-in] caller speech detected; cancelled OpenAI response and cleared Telnyx playback queue');
       }
 
       if (event.type === 'response.function_call_arguments.done') {
@@ -396,7 +409,10 @@ function handleTelnyxStream(telnyxWs) {
       const audio = msg.media?.payload;
       if (!audio) return;
       if (openaiReady) sendJson(openaiWs, { type: 'input_audio_buffer.append', audio });
-      else pendingAudio.push(audio);
+      else {
+        pendingAudio.push(audio);
+        if (pendingAudio.length > MAX_PENDING_AUDIO_CHUNKS) pendingAudio.shift();
+      }
       return;
     }
 

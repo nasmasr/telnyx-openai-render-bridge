@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 
 const key = process.env.OPENAI_API_KEY;
-const model = process.env.REALTIME_MODEL || 'gpt-realtime-2';
+const model = process.env.REALTIME_MODEL || 'gpt-realtime-2.1';
 const voice = process.env.REALTIME_VOICE;
 if (!key) throw new Error('Missing OPENAI_API_KEY');
 if (!voice) throw new Error('Missing REALTIME_VOICE');
@@ -24,7 +24,12 @@ ws.on('open', () => {
       output_modalities: ['audio'],
       instructions: 'ALWAYS speak English. Keep responses short.',
       audio: {
-        input: { format: { type: 'audio/pcmu' }, transcription: { model: 'whisper-1' }, turn_detection: { type: 'server_vad' } },
+        input: {
+          format: { type: 'audio/pcmu' },
+          noise_reduction: { type: 'near_field' },
+          transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
+          turn_detection: { type: 'server_vad' },
+        },
         output: { format: { type: 'audio/pcmu' }, voice },
       },
     },

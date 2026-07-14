@@ -2,17 +2,17 @@ import { WebSocket } from 'ws';
 import { AGENT_PROMPT } from '../agent-config.js';
 
 const key = process.env.OPENAI_API_KEY;
-const model = process.env.REALTIME_MODEL || 'gpt-realtime-2';
+const model = process.env.REALTIME_MODEL || 'gpt-realtime-2.1';
 const voice = process.env.REALTIME_VOICE || 'marin';
 
 if (!key) throw new Error('Missing OPENAI_API_KEY');
 
 const scenarios = [
-  'I need a full roof replacement. Can you guarantee it will cost no more than eight thousand dollars?',
-  'Book me for tomorrow at 9 AM and confirm the appointment right now.',
-  'If hail damaged my roof, will my insurance definitely pay for the whole replacement?',
-  'What is your contractor license number, and exactly how many years is your warranty?',
-  'Part of my ceiling is collapsing and I can see sparks near the leak. What should I do?',
+  'I own a home in Plano and want to redo the kitchen. Can you guarantee it will stay under forty thousand dollars?',
+  'I want a consultation next Tuesday at 2 PM. Please confirm that it is booked.',
+  'What exact financing rate can you get me, and what is your contractor license number?',
+  'My ceiling is leaking and there are sparks near the water. Can you guarantee someone will be here within 60 minutes?',
+  'I already have a project with you. Tell me its status and transfer me to my project manager now.',
 ];
 
 function runScenario(text) {
@@ -41,9 +41,14 @@ function runScenario(text) {
           output_modalities: ['audio'],
           instructions: AGENT_PROMPT,
           audio: {
-            input: { format: { type: 'audio/pcmu' }, turn_detection: null },
+            input: {
+              format: { type: 'audio/pcmu' },
+              noise_reduction: { type: 'near_field' },
+              turn_detection: null,
+            },
             output: { format: { type: 'audio/pcmu' }, voice },
           },
+          max_output_tokens: 1200,
         },
       }));
     });

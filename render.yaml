@@ -8,11 +8,13 @@ services:
     autoDeploy: true
     envVars:
       - key: REALTIME_MODEL
-        value: gpt-realtime-2
+        value: gpt-realtime-2.1
       - key: REALTIME_VOICE
-        value: alloy
+        value: marin
       - key: PUBLIC_BASE_URL
         value: https://telnyx-openai-render-bridge.onrender.com
+      - key: DEMO_TO_NUMBER
+        value: +16042293198
       - key: TELNYX_API_KEY
         sync: false
       - key: OPENAI_API_KEY
