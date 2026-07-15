@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import { TURN_DETECTION_CONFIG } from '../agent-config.js';
 
 const key = process.env.OPENAI_API_KEY;
 const model = process.env.REALTIME_MODEL || 'gpt-realtime-2.1';
@@ -28,7 +29,7 @@ ws.on('open', () => {
           format: { type: 'audio/pcmu' },
           noise_reduction: { type: 'near_field' },
           transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
-          turn_detection: { type: 'server_vad' },
+          turn_detection: TURN_DETECTION_CONFIG,
         },
         output: { format: { type: 'audio/pcmu' }, voice },
       },
@@ -45,8 +46,16 @@ ws.on('message', data => {
     process.exit(1);
   }
   if (event.type === 'session.updated') {
+    const configuredTurnDetection = event.session?.audio?.input?.turn_detection;
+    if (configuredTurnDetection?.type !== TURN_DETECTION_CONFIG.type
+      || configuredTurnDetection?.eagerness !== TURN_DETECTION_CONFIG.eagerness) {
+      clearTimeout(timeout);
+      console.error(`unexpected turn detection: ${JSON.stringify(configuredTurnDetection)}`);
+      ws.close();
+      process.exit(1);
+    }
     clearTimeout(timeout);
-    console.log(`verified OpenAI Realtime ${model} voice=${voice} PCMU session.updated`);
+    console.log(`verified OpenAI Realtime ${model} voice=${voice} PCMU turn_detection=${configuredTurnDetection.type}/${configuredTurnDetection.eagerness}`);
     ws.close();
   }
 });

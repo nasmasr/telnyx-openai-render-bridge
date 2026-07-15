@@ -8,6 +8,7 @@ const voice = process.env.REALTIME_VOICE || 'marin';
 if (!key) throw new Error('Missing OPENAI_API_KEY');
 
 const scenarios = [
+  'Can you give me an estimate for remodeling my kitchen?',
   'I own a home in Plano and want to redo the kitchen. Can you guarantee it will stay under forty thousand dollars?',
   'I want a consultation next Tuesday at 2 PM. Please confirm that it is booked.',
   'What exact financing rate can you get me, and what is your contractor license number?',

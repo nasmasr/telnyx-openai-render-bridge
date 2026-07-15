@@ -6,6 +6,7 @@ import {
   AGENT_PROMPT as BUILT_IN_AGENT_PROMPT,
   GREETING_INSTRUCTIONS as BUILT_IN_GREETING_INSTRUCTIONS,
   PROMPT_VERSION as BUILT_IN_PROMPT_VERSION,
+  TURN_DETECTION_CONFIG,
 } from './agent-config.js';
 
 const {
@@ -157,6 +158,8 @@ app.get('/health', (req, res) => {
     recording_enabled: recordingEnabled,
     recording_format: recordingEnabled ? 'mp3' : null,
     recording_channels: recordingEnabled ? 'dual' : null,
+    turn_detection_type: TURN_DETECTION_CONFIG.type,
+    turn_detection_eagerness: TURN_DETECTION_CONFIG.eagerness,
     missing_env: missing,
     webhook: PUBLIC_BASE_URL ? publicHttps('/telnyx/webhook') : null,
     stream: PUBLIC_BASE_URL ? publicWss('/telnyx/stream') : null,
@@ -259,6 +262,7 @@ function handleTelnyxStream(telnyxWs) {
   let openaiReady = false;
   let greetingSent = false;
   let responseInProgress = false;
+  let suppressAssistantAudio = false;
   let openaiWs = null;
   const pendingAudio = [];
 
@@ -281,12 +285,7 @@ function handleTelnyxStream(telnyxWs) {
               format: { type: 'audio/pcmu' },
               noise_reduction: { type: 'near_field' },
               transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
-              turn_detection: {
-                type: 'server_vad',
-                threshold: 0.45,
-                prefix_padding_ms: 250,
-                silence_duration_ms: 400,
-              },
+              turn_detection: TURN_DETECTION_CONFIG,
             },
             output: { format: { type: 'audio/pcmu' }, voice: REALTIME_VOICE },
           },
@@ -333,10 +332,14 @@ function handleTelnyxStream(telnyxWs) {
         return;
       }
 
-      if (event.type === 'response.created') responseInProgress = true;
+      if (event.type === 'response.created') {
+        responseInProgress = true;
+        suppressAssistantAudio = false;
+      }
       if (event.type === 'response.done') responseInProgress = false;
 
       if (event.type === 'response.output_audio.delta' && streamId) {
+        if (suppressAssistantAudio) return;
         sendJson(telnyxWs, { event: 'media', media: { payload: event.delta } });
         return;
       }
@@ -347,12 +350,9 @@ function handleTelnyxStream(telnyxWs) {
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
-        if (responseInProgress) {
-          sendJson(openaiWs, { type: 'response.cancel' });
-          responseInProgress = false;
-        }
+        suppressAssistantAudio = true;
         sendJson(telnyxWs, { event: 'clear' });
-        log('[barge-in] caller speech detected; cancelled OpenAI response and cleared Telnyx playback queue');
+        log('[barge-in] caller speech detected; suppressing assistant audio and cleared Telnyx playback queue', 'response_in_progress=' + responseInProgress);
       }
 
       if (event.type === 'response.function_call_arguments.done') {
