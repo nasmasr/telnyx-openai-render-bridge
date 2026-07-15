@@ -14,7 +14,7 @@ services:
       - key: PUBLIC_BASE_URL
         value: https://telnyx-openai-render-bridge.onrender.com
       - key: DEMO_TO_NUMBER
-        value: +16042293198
+        value: +12136710114
       - key: TELNYX_API_KEY
         sync: false
       - key: OPENAI_API_KEY

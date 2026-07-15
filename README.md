@@ -1,6 +1,6 @@
 # America's General Contractor Voice Demo
 
-Callable demo line: **+1 604-229-3198**
+Callable demo line: **+1 213-671-0114**
 
 ```text
 Telnyx Call Control and bidirectional media streaming
@@ -25,7 +25,7 @@ Inbound calls are recorded by Telnyx as untrimmed dual-channel MP3 files. The op
 - `TELNYX_API_KEY`
 - `OPENAI_API_KEY`
 - `PUBLIC_BASE_URL` — Render service URL, e.g. `https://example.onrender.com`
-- `DEMO_TO_NUMBER` — `+16042293198` in production
+- `DEMO_TO_NUMBER` — `+12136710114` in production
 - `REALTIME_MODEL` — recommended `gpt-realtime-2.1`
 - `REALTIME_VOICE` — recommended `marin`
 - `USE_ENV_PROMPT` — default `false`; set to `true` only to use environment prompt overrides
